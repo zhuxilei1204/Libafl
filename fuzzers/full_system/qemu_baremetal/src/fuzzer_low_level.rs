@@ -94,9 +94,9 @@ pub fn fuzz() {
 
         // Create QEMU configuration
         let qemu_config = QemuConfig::builder()
-            .machine("mps2-an385")
+            .machine("qemu_cortex_m3")
             .monitor(config::Monitor::Null)
-            .kernel(format!("{target_dir}/example.elf"))
+            .kernel(env::var("KERNEL").expect("KERNEL env not set"))
             .serial(config::Serial::Null)
             .no_graphic(true)
             .snapshot(true)

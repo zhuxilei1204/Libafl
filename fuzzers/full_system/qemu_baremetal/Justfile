@@ -1,72 +1,60 @@
 import "../../../just/libafl-qemu.just"
+
 FUZZER_NAME := "qemu_baremetal"
-VHARNESS := BUILD_DIR / "vharness_out"
+VHARNESS     := BUILD_DIR / "vharness_out"
 
-KERNEL := TARGET_DIR / "example.elf"
-DUMMY_IMG := TARGET_DIR / "dummy.qcow2"
+# 1. 指向你已经准备好的 Zephyr ELF
+ZEPHYR_ELF := "/home/zxl/zephyr-project/samples/hello_world/build/zephyr/zephyr.elf"
+DUMMY_IMG    := TARGET_DIR / "dummy.qcow2"
 
+# 2. 确保目录 & 磁盘镜像
 target_dir:
     mkdir -p "{{TARGET_DIR}}"
 
 image: target_dir
-    qemu-img create -f qcow2 {{DUMMY_IMG}} 32M
+    qemu-img create -f qcow2 "{{DUMMY_IMG}}" 32M
 
-target flavor="low_level": image target_dir (build flavor)
-    arm-none-eabi-gcc -ggdb -ffreestanding -nostartfiles -lgcc \
-        -T example/mps2_m3.ld \
-        -mcpu=cortex-m3 \
-        -D "TARGET_{{ uppercase(flavor) }}" \
-        -I {{ VHARNESS  / "include" }} \
-        example/main.c \
-        example/startup.c \
-        {{ VHARNESS  / "src" / "calls.c" }} \
-        {{ VHARNESS  / "src" / "lqemu.c" }} \
-        -o {{TARGET_DIR}}/example.elf
-
-build flavor="low_level": target_dir
+# 3. 只编译 LibAFL 侧 fuzzer
+build flavor="breakpoint": target_dir
     cargo build \
         --profile {{PROFILE}} \
         --no-default-features \
-        --features std,{{flavor}},{{ ARCH }}  \
+        --features std,{{flavor}},{{ARCH}} \
         --target-dir {{TARGET_DIR}}
 
-build-multiarch flavor="low_level": target_dir
-    cargo build \
-        --profile {{PROFILE}} \
-        --no-default-features \
-        --features std,{{flavor}},{{ ARCH }} \
-        --target-dir {{TARGET_DIR}}
-
-run flavor="low_level": (target flavor) (build flavor)
-    {{BUILD_DIR / "qemu_baremetal"}} \
+# 4. 修复运行规则
+run flavor="breakpoint": image (build flavor)
+    env TARGET_DIR="{{TARGET_DIR}}" KERNEL="{{ZEPHYR_ELF}}" \
+    {{TARGET_DIR / PROFILE / "qemu_baremetal"}} \
         -icount shift=auto,align=off,sleep=off \
         -machine mps2-an385 \
         -monitor null \
-        -kernel {{KERNEL}} \
+        -kernel "{{ZEPHYR_ELF}}" \
         -drive if=none,format=qcow2,file={{DUMMY_IMG}} \
         -serial null \
         -nographic \
         -snapshot \
         -S
 
-test_flavor flavor="low_level": (target flavor) (build flavor)
+# 5. 修复测试规则
+test_flavor flavor="breakpoint": image (build flavor)
     #!/bin/bash
-    export KERNEL={{ KERNEL }}
-    export TARGET_DIR={{ TARGET_DIR }}
+    export KERNEL="{{ZEPHYR_ELF}}"
+    export TARGET_DIR="{{TARGET_DIR}}"
 
     TMP_DIR=$(mktemp -d)
 
-    timeout 10s {{ FUZZER }} \
+    timeout 10s {{TARGET_DIR / PROFILE / "qemu_baremetal"}} \
         -icount shift=auto,align=off,sleep=off \
-        -machine mps2-an385 \
+        -machine mps2-an385\
         -monitor null \
-        -kernel {{ KERNEL }} -serial null \
-        -drive if=none,format=qcow2,file={{ DUMMY_IMG }} \
+        -kernel "{{ZEPHYR_ELF}}" \
+        -drive if=none,format=qcow2,file={{DUMMY_IMG}} \
         -nographic \
         -snapshot \
         -S | tee "$TMP_DIR/fuzz.log" 2>&1 || true
 
-    if [ -z "$(grep 'Objective' $TMP_DIR/fuzz.log)" ]; then
+    if [ -z "$(grep 'Objective' "$TMP_DIR/fuzz.log")" ]; then
         echo "qemu_baremetal ${FEATURE}: Fuzzer did not find the objective in $TMP_DIR/fuzz.log"
         exit 1
     else

@@ -3,10 +3,11 @@ import "../../../just/libafl-qemu.just"
 FUZZER_NAME := "qemu_baremetal"
 VHARNESS     := BUILD_DIR / "vharness_out"
 
-# 1. 指向你已经准备好的 Zephyr ELF
-ZEPHYR_ELF := "/home/zxl/zephyr-project/samples/hello_world/build/zephyr/zephyr.elf"
+# 1. 指向你已经准备好的 Zephyr fuzz harness ELF
+#    (需要导出 FUZZ_INPUT / FUZZ_LAST_OP / BREAKPOINT)
+kernel_ELF := "/home/zwz/zephyr/samples/fuzz/build/zephyr/zephyr.elf"
 DUMMY_IMG    := TARGET_DIR / "dummy.qcow2"
-ZEPHYR_OUTPUT := "/home/zxl/LibAFL/fuzzers/full_system/qemu_baremetal/zephyr_output.log"
+KERNEL_OUTPUT := "/home/zwz/fuzzing/fuzzers/full_system/qemu_baremetal/FUZZ_output.log"
 
 # 2. 确保目录 & 磁盘镜像
 target_dir:
@@ -25,32 +26,61 @@ build flavor="breakpoint": target_dir
 
 # 4. 运行：已注入 RUST_LOG 与 QEMU_LIBAFL_DEBUG，日志实时写出
 run flavor="breakpoint": image (build flavor)
-    env \
-      TARGET_DIR="{{TARGET_DIR}}" \
-      KERNEL="{{ZEPHYR_ELF}}" \
-      RUST_LOG="libafl=debug,libafl_bolts=debug,libafl_qemu=debug" \
-      QEMU_LIBAFL_DEBUG=1 \
-      LIBAFL_MAX_RESTART=0 \
-      LIBAFL_EXIT_CLEANLY_AFTER=0 \
-    {{TARGET_DIR / PROFILE / "qemu_baremetal"}} \
-        -cpu cortex-m3 \
-        -machine mps2-an385 \
-        -nographic \
-        -vga none \
-        -net none \
-        -chardev stdio,id=con,mux=on \
-        -serial chardev:con \
-        -mon chardev=con,mode=readline \
-        -icount shift=7,align=off,sleep=off \
-        -rtc clock=vm \
-        -kernel "{{ZEPHYR_ELF}}" \
-        -no-reboot \
-        -d guest_errors 2>&1 | tee zephyr_run.debug.log
+        #!/usr/bin/env bash
+        set -euo pipefail
+        # Ensure Ctrl-C kills broker/client/QEMU + tee, avoiding orphaned processes.
+        # Run the whole pipeline in its own process group, so we can kill it without
+        # recursively signaling this wrapper shell (which would spam the terminal).
+        child_pgid=""
+        trap_fired=0
+        cleanup() {
+            # Run only once.
+            if [ "$trap_fired" -ne 0 ]; then return; fi
+            trap_fired=1
+            # Stop handling signals inside cleanup to avoid recursion.
+            trap - INT TERM
+            if [ -n "$child_pgid" ]; then
+                kill -TERM -- "-$child_pgid" >/dev/null 2>&1 || true
+                sleep 0.2
+                kill -KILL -- "-$child_pgid" >/dev/null 2>&1 || true
+            fi
+        }
+        trap cleanup INT TERM
+
+        # Start child in a new session/process-group.
+        setsid bash -lc '
+            exec env \
+                TARGET_DIR="{{TARGET_DIR}}" \
+                KERNEL="{{kernel_ELF}}" \
+                RUST_LOG="libafl=debug,libafl_bolts=debug,libafl_qemu=debug" \
+                QEMU_LIBAFL_DEBUG=1 \
+                LIBAFL_MAX_RESTART=0 \
+                LIBAFL_EXIT_CLEANLY_AFTER=0 \
+            {{TARGET_DIR / PROFILE / "qemu_baremetal"}} \
+                    -cpu cortex-m3 \
+                    -machine mps2-an385 \
+                    -nographic \
+                    -vga none \
+                    -net none \
+                    -chardev stdio,id=con,mux=on \
+                    -serial chardev:con \
+                    -mon chardev=con,mode=readline \
+                    -icount shift=7,align=off,sleep=off \
+                    -rtc clock=vm \
+                    -kernel "{{kernel_ELF}}" \
+                    -no-reboot \
+                    -d guest_errors 2>&1 | tee rtos_fuzz_run.debug.log
+        ' &
+        child_pid=$!
+        child_pgid=$child_pid
+
+        # Wait for child; if interrupted, cleanup runs via trap.
+        wait $child_pid
 
 # 5. 测试规则（同样注入环境变量，方便 CI）
 test_flavor flavor="breakpoint": image (build flavor)
     #!/bin/bash
-    export KERNEL="{{ZEPHYR_ELF}}"
+    export KERNEL="{{kernel_ELF}}"
     export TARGET_DIR="{{TARGET_DIR}}"
     export RUST_LOG="libafl=debug,libafl_bolts=debug,libafl_qemu=debug"
     export QEMU_LIBAFL_DEBUG=1
@@ -61,9 +91,9 @@ test_flavor flavor="breakpoint": image (build flavor)
         -icount shift=auto,align=off,sleep=off \
         -machine mps2-an385\
         -monitor null \
-        -kernel "{{ZEPHYR_ELF}}" \
+        -kernel "{{kernel_ELF}}" \
         -drive if=none,format=qcow2,file={{DUMMY_IMG}} \
-        -serial file:{{ZEPHYR_OUTPUT}} \
+        -serial file:{{KERNEL_OUTPUT}} \
         -nographic \
         -snapshot \
         -no-reboot \
@@ -80,4 +110,4 @@ test_flavor flavor="breakpoint": image (build flavor)
 test: (test_flavor "low_level") (test_flavor "breakpoint") (test_flavor "custom_insn")
 
 clean:
-    cargo clean
+    cargo cleanrtos-fuzz-all/rtos-fuzz-project

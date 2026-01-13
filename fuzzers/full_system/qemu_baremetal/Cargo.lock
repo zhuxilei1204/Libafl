@@ -1616,6 +1616,7 @@ dependencies = [
  "libafl_qemu",
  "libafl_qemu_build",
  "libafl_targets",
+ "libc",
  "log",
 ]
 

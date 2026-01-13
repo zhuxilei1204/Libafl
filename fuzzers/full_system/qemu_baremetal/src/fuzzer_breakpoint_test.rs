@@ -9,7 +9,8 @@ use libafl::{
     feedback_or, feedback_or_fast,
     feedbacks::{CrashFeedback, MaxMapFeedback, TimeFeedback, TimeoutFeedback},
     fuzzer::{Fuzzer, StdFuzzer},
-    inputs::{BytesInput, HasTargetBytes},
+    inputs::{BytesInput},
+    inputs::HasTargetBytes,
     monitors::MultiMonitor,
     mutators::{havoc_mutations::havoc_mutations, scheduled::HavocScheduledMutator},
     observers::{CanTrack, HitcountsMapObserver, TimeObserver, VariableMapObserver},
@@ -210,8 +211,16 @@ pub fn fuzz() {
                 }
             }
             
+            // Systemmode InputLocation writes only `input.len()` bytes.
+            // Pad to MAX_INPUT_SIZE so FUZZ_INPUT is fully overwritten each run.
+            let max = unsafe { MAX_INPUT_SIZE };
+            let mut padded = vec![0u8; max];
+            let copy_len = core::cmp::min(input_bytes.len(), max);
+            padded[..copy_len].copy_from_slice(&input_bytes[..copy_len]);
+            let padded_input = BytesInput::new(padded);
+
             let start_time = std::time::Instant::now();
-            let result = emulator.run(input);
+            let result = emulator.run(&padded_input);
             let elapsed = start_time.elapsed();
             
             match result {

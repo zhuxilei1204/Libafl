@@ -1,0 +1,83 @@
+import "../../../just/libafl-qemu.just"
+
+FUZZER_NAME := "qemu_baremetal"
+VHARNESS     := BUILD_DIR / "vharness_out"
+
+# 1. 指向你已经准备好的 Zephyr ELF
+ZEPHYR_ELF := "/home/zwz/zephyr/samples/hello_world/build/zephyr/zephyr.elf"
+DUMMY_IMG    := TARGET_DIR / "dummy.qcow2"
+ZEPHYR_OUTPUT := "/home/zwz/Libafl/fuzzers/full_system/qemu_baremetal/zephyr_output.log"
+
+# 2. 确保目录 & 磁盘镜像
+target_dir:
+    mkdir -p "{{TARGET_DIR}}"
+
+image: target_dir
+    qemu-img create -f qcow2 "{{DUMMY_IMG}}" 32M
+
+# 3. 只编译 LibAFL 侧 fuzzer
+build flavor="breakpoint": target_dir
+    cargo build \
+        --profile {{PROFILE}} \
+        --no-default-features \
+        --features std,{{flavor}},{{ARCH}} \
+        --target-dir {{TARGET_DIR}}
+
+# 4. 运行：已注入 RUST_LOG 与 QEMU_LIBAFL_DEBUG，日志实时写出
+run flavor="breakpoint": image (build flavor)
+    env \
+      TARGET_DIR="{{TARGET_DIR}}" \
+      KERNEL="{{ZEPHYR_ELF}}" \
+      RUST_LOG="libafl=debug,libafl_bolts=debug,libafl_qemu=debug" \
+      QEMU_LIBAFL_DEBUG=1 \
+      LIBAFL_MAX_RESTART=0 \
+      LIBAFL_EXIT_CLEANLY_AFTER=0 \
+    {{TARGET_DIR / PROFILE / "qemu_baremetal"}} \
+        -cpu cortex-m3 \
+        -machine mps2-an385 \
+        -nographic \
+        -vga none \
+        -net none \
+        -chardev stdio,id=con,mux=on \
+        -serial chardev:con \
+        -mon chardev=con,mode=readline \
+        -icount shift=7,align=off,sleep=off \
+        -rtc clock=vm \
+        -kernel "{{ZEPHYR_ELF}}" \
+        -no-reboot \
+        -d guest_errors 2>&1 | tee zephyr_run.debug.log
+
+# 5. 测试规则（同样注入环境变量，方便 CI）
+test_flavor flavor="breakpoint": image (build flavor)
+    #!/bin/bash
+    export KERNEL="{{ZEPHYR_ELF}}"
+    export TARGET_DIR="{{TARGET_DIR}}"
+    export RUST_LOG="libafl=debug,libafl_bolts=debug,libafl_qemu=debug"
+    export QEMU_LIBAFL_DEBUG=1
+
+    TMP_DIR=$(mktemp -d)
+
+    timeout 10s {{TARGET_DIR / PROFILE / "qemu_baremetal"}} \
+        -icount shift=auto,align=off,sleep=off \
+        -machine mps2-an385\
+        -monitor null \
+        -kernel "{{ZEPHYR_ELF}}" \
+        -drive if=none,format=qcow2,file={{DUMMY_IMG}} \
+        -serial file:{{ZEPHYR_OUTPUT}} \
+        -nographic \
+        -snapshot \
+        -no-reboot \
+        -d guest_errors \
+        -S 2>&1 | tee "$TMP_DIR/fuzz.log" || true
+
+    if [ -z "$(grep 'Objective' "$TMP_DIR/fuzz.log")" ]; then
+        echo "qemu_baremetal ${FEATURE}: Fuzzer did not find the objective in $TMP_DIR/fuzz.log"
+        exit 1
+    else
+        echo "qemu_baremetal ${FEATURE}: Objective found."
+    fi
+
+test: (test_flavor "low_level") (test_flavor "breakpoint") (test_flavor "custom_insn")
+
+clean:
+    cargo clean

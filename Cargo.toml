@@ -130,7 +130,7 @@ static_assertions = "1.1.0"
 strum = "0.27.2"
 strum_macros = "0.27.2"
 toml = "0.9.7" # For parsing the injections toml file
-typed-builder = "0.22.0" # Implement the builder pattern at compiletime
+typed-builder = "0.23.0" # Implement the builder pattern at compiletime
 typeid = "1.0.3" # Safe type_eq that doesn't rely on std specialization
 uuid = { version = "1.18.1", features = ["serde", "v4"] }
 which = "8.0.0"

@@ -101,7 +101,7 @@ capstone = "0.13.0" # Disassembler used in libafl_unicorn to provide disassembly
 clap = "4.5.49"
 cc = "1.2.40"
 cmake = "0.1.54"
-document-features = "0.2.11"
+document-features = "0.2.12"
 fastbloom = { version = "0.14.0", default-features = false }
 hashbrown = { version = "0.16.0", default-features = false } # A faster hashmap, nostd compatible
 just = "=1.40.0"
